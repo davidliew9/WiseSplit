@@ -1,6 +1,6 @@
 # WiseSplit
 
-A small Splitwise-style PWA for roommate households. The current MVP is local-first so it can be used immediately in one browser, while the project includes a Supabase client stub and starter Postgres schema for moving the data to a shared backend.
+A small Splitwise-style PWA for roommate households. The app uses Supabase Auth and Supabase Postgres so household members can share expenses from different phones.
 
 ## What Works
 
@@ -37,21 +37,34 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## Supabase Path
+## Supabase Setup
 
 Add project credentials to `.env.local`:
 
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=...
-NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
 ```
 
-The starter database schema is in `supabase/schema.sql`. It models:
+In Supabase, open SQL Editor and run `supabase/schema.sql`. It creates:
 
 - `households`
 - `household_members`
 - `expenses`
 - `expense_splits`
 - `settlements`
+- row level security policies
+- helper functions for household creation and invite-code joining
+- validation triggers that keep expenses and settlements inside one household
 
-The current UI stores data in `localStorage`. The next backend step is replacing the local household state with Supabase Auth plus row-level-secured reads/writes against those tables.
+If you already ran an older development schema and do not need to keep that test data, run `supabase/reset-dev.sql` first, then run `supabase/schema.sql`.
+
+## App Flow
+
+1. Create an account or sign in.
+2. Create a household and add roommate names.
+3. Share the invite code shown in the top bar.
+4. Roommates sign in and join with that code.
+5. Add expenses, view balances, and record settlements.
+
+Roommate names can exist before someone joins. If Alex is already listed as a placeholder and signs up using the display name `Alex`, joining with the invite code claims that member row for Alex's account.

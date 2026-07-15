@@ -7,8 +7,11 @@ import {
   Copy,
   HandCoins,
   Home,
+  LogOut,
+  Mail,
   Plus,
   ReceiptText,
+  RefreshCw,
   Scale,
   Users
 } from "lucide-react";
@@ -20,15 +23,23 @@ import {
   suggestSettlements,
   validateExpenseSplits
 } from "@/lib/balances";
+import {
+  addRoommates,
+  createHousehold,
+  getCurrentUser,
+  insertExpense,
+  insertSettlement,
+  joinHousehold,
+  loadFirstHousehold,
+  loadHousehold,
+  onAuthStateChange,
+  signInWithPassword,
+  signOut,
+  signUpWithPassword
+} from "@/lib/database";
 import { formatCurrency, fromCents, parseMoneyInput, toCents } from "@/lib/money";
-import { createSampleHousehold, makeId } from "@/lib/sample-data";
+import type { User } from "@supabase/supabase-js";
 import type { Expense, ExpenseSplit, Household, Person, Settlement } from "@/lib/types";
-
-const STORAGE_KEY = "wisesplit.household.v1";
-
-function createInviteCode() {
-  return `WISE-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-}
 
 function splitEvenly(amount: number, personIds: string[]): ExpenseSplit[] {
   const totalCents = toCents(amount);
@@ -47,34 +58,133 @@ function personLabel(household: Household, personId: string) {
 }
 
 export default function HomePage() {
+  const [user, setUser] = useState<User | null>(null);
   const [household, setHousehold] = useState<Household | null>(null);
   const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [booting, setBooting] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      setHousehold(JSON.parse(saved));
+    let active = true;
+
+    async function boot() {
+      try {
+        const currentUser = await getCurrentUser();
+        if (!active) return;
+        setUser(currentUser);
+        setHousehold(currentUser ? await loadFirstHousehold() : null);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Could not connect to Supabase.");
+      } finally {
+        if (active) setBooting(false);
+      }
     }
 
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => undefined);
     }
-  }, []);
 
-  useEffect(() => {
-    if (household) {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(household));
-    }
-  }, [household]);
+    boot();
+    const listener = onAuthStateChange(async (nextUser) => {
+      if (!active) return;
+      setUser(nextUser);
+      setHousehold(nextUser ? await loadFirstHousehold() : null);
+      setBooting(false);
+    });
+
+    return () => {
+      active = false;
+      listener.data.subscription.unsubscribe();
+    };
+  }, []);
 
   const selectedExpense = useMemo(
     () => household?.expenses.find((expense) => expense.id === selectedExpenseId) ?? null,
     [household, selectedExpenseId]
   );
 
+  async function refreshHousehold(targetHouseholdId = household?.id) {
+    if (!targetHouseholdId) {
+      setHousehold(await loadFirstHousehold());
+      return;
+    }
+
+    setHousehold(await loadHousehold(targetHouseholdId));
+  }
+
+  async function runAction(action: () => Promise<void>) {
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      await action();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Something went wrong.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function handleSignIn(email: string, password: string) {
+    await runAction(async () => {
+      await signInWithPassword(email, password);
+      setNotice("Signed in.");
+    });
+  }
+
+  async function handleSignUp(email: string, password: string) {
+    await runAction(async () => {
+      const result = await signUpWithPassword(email, password);
+      setNotice(result.session ? "Account created." : "Check your email to confirm your account, then sign in.");
+    });
+  }
+
+  async function handleCreateHousehold(name: string, displayName: string, roommateNames: string[]) {
+    await runAction(async () => {
+      const nextHousehold = await createHousehold(name, displayName, roommateNames);
+      setHousehold(nextHousehold);
+    });
+  }
+
+  async function handleJoinHousehold(inviteCode: string, displayName: string) {
+    await runAction(async () => {
+      const nextHousehold = await joinHousehold(inviteCode, displayName);
+      setHousehold(nextHousehold);
+    });
+  }
+
+  async function handleSignOut() {
+    await runAction(async () => {
+      await signOut();
+      setHousehold(null);
+      setUser(null);
+    });
+  }
+
+  if (booting) {
+    return <StatusScreen title="Loading WiseSplit" message="Checking your session and household." />;
+  }
+
+  if (!user) {
+    return <AuthScreen error={error} isSaving={isSaving} notice={notice} onSignIn={handleSignIn} onSignUp={handleSignUp} />;
+  }
+
   if (!household) {
-    return <Onboarding onReady={setHousehold} />;
+    return (
+      <Onboarding
+        error={error}
+        isSaving={isSaving}
+        notice={notice}
+        onCreateHousehold={handleCreateHousehold}
+        onJoinHousehold={handleJoinHousehold}
+        onSignOut={handleSignOut}
+        userEmail={user.email ?? "Signed in"}
+      />
+    );
   }
 
   const activeHousehold = household;
@@ -86,30 +196,26 @@ export default function HomePage() {
     .filter((amount) => amount > 0)
     .reduce((sum, amount) => sum + amount, 0);
 
-  function updateHousehold(updater: (current: Household) => Household) {
-    setHousehold((current) => (current ? updater(current) : current));
+  async function addExpense(expense: Expense) {
+    await runAction(async () => {
+      const expenseId = await insertExpense(activeHousehold.id, expense);
+      await refreshHousehold(activeHousehold.id);
+      setSelectedExpenseId(expenseId);
+    });
   }
 
-  function addExpense(expense: Expense) {
-    updateHousehold((current) => ({
-      ...current,
-      expenses: [expense, ...current.expenses]
-    }));
-    setSelectedExpenseId(expense.id);
+  async function addSettlement(settlement: Settlement) {
+    await runAction(async () => {
+      await insertSettlement(activeHousehold.id, settlement);
+      await refreshHousehold(activeHousehold.id);
+    });
   }
 
-  function addSettlement(settlement: Settlement) {
-    updateHousehold((current) => ({
-      ...current,
-      settlements: [settlement, ...current.settlements]
-    }));
-  }
-
-  function addPerson(name: string) {
-    updateHousehold((current) => ({
-      ...current,
-      people: [...current.people, { id: makeId("person"), name }]
-    }));
+  async function addPerson(name: string) {
+    await runAction(async () => {
+      await addRoommates(activeHousehold.id, [name]);
+      await refreshHousehold(activeHousehold.id);
+    });
   }
 
   async function copyInvite() {
@@ -126,12 +232,21 @@ export default function HomePage() {
           <h1>{activeHousehold.name}</h1>
         </div>
         <div className="topbar-actions">
+          <button className="ghost-button slim" onClick={() => runAction(() => refreshHousehold(activeHousehold.id))} type="button">
+            <RefreshCw size={18} />
+            <span>Refresh</span>
+          </button>
           <button className="invite-button" onClick={copyInvite} type="button" title="Copy invite code">
             {copied ? <Check size={18} /> : <Copy size={18} />}
             <span>{activeHousehold.inviteCode}</span>
           </button>
+          <button className="ghost-button slim" onClick={handleSignOut} type="button">
+            <LogOut size={18} />
+            <span>Sign out</span>
+          </button>
         </div>
       </header>
+      <Feedback error={error} notice={notice} />
 
       <section className="summary-grid" aria-label="Household summary">
         <Metric icon={<ReceiptText size={20} />} label="Total expenses" value={formatCurrency(totalSpent)} />
@@ -141,13 +256,13 @@ export default function HomePage() {
 
       <section className="workspace-grid">
         <div className="stack">
-          <ExpenseForm household={activeHousehold} onAddExpense={addExpense} />
-          <SettlementForm household={activeHousehold} suggestions={suggestions} onAddSettlement={addSettlement} />
+          <ExpenseForm household={activeHousehold} isSaving={isSaving} onAddExpense={addExpense} />
+          <SettlementForm household={activeHousehold} isSaving={isSaving} suggestions={suggestions} onAddSettlement={addSettlement} />
         </div>
 
         <div className="stack">
           <BalancesPanel household={activeHousehold} balances={balances} suggestions={suggestions} />
-          <PeoplePanel people={activeHousehold.people} onAddPerson={addPerson} />
+          <PeoplePanel isSaving={isSaving} people={activeHousehold.people} onAddPerson={addPerson} />
         </div>
       </section>
 
@@ -158,7 +273,7 @@ export default function HomePage() {
             <h2>Expenses</h2>
           </div>
           <div className="expense-list">
-            {activeHousehold.expenses.map((expense) => (
+            {activeHousehold.expenses.length ? activeHousehold.expenses.map((expense) => (
               <button
                 className={`expense-row ${expense.id === selectedExpenseId ? "selected" : ""}`}
                 key={expense.id}
@@ -171,7 +286,7 @@ export default function HomePage() {
                 </span>
                 <strong>{formatCurrency(expense.amount)}</strong>
               </button>
-            ))}
+            )) : <p className="empty-state">No expenses yet.</p>}
           </div>
         </div>
 
@@ -199,33 +314,140 @@ export default function HomePage() {
   );
 }
 
-function Onboarding({ onReady }: { onReady: (household: Household) => void }) {
+function StatusScreen({ title, message }: { title: string; message: string }) {
+  return (
+    <main className="onboarding">
+      <section className="onboarding-panel">
+        <div className="brand-mark">
+          <Home size={30} />
+        </div>
+        <p className="eyebrow">WiseSplit</p>
+        <h1>{title}</h1>
+        <p className="empty-state">{message}</p>
+      </section>
+    </main>
+  );
+}
+
+function Feedback({ error, notice }: { error: string | null; notice: string | null }) {
+  if (!error && !notice) return null;
+
+  return (
+    <div className={error ? "feedback error" : "feedback notice"} role="status">
+      {error ?? notice}
+    </div>
+  );
+}
+
+function AuthScreen({
+  error,
+  isSaving,
+  notice,
+  onSignIn,
+  onSignUp
+}: {
+  error: string | null;
+  isSaving: boolean;
+  notice: string | null;
+  onSignIn: (email: string, password: string) => Promise<void>;
+  onSignUp: (email: string, password: string) => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (mode === "signin") {
+      await onSignIn(email, password);
+    } else {
+      await onSignUp(email, password);
+    }
+  }
+
+  return (
+    <main className="onboarding">
+      <section className="onboarding-panel">
+        <div className="brand-mark">
+          <Mail size={30} />
+        </div>
+        <p className="eyebrow">WiseSplit</p>
+        <h1>Sign in to share expenses.</h1>
+        <Feedback error={error} notice={notice} />
+
+        <div className="segmented" role="tablist" aria-label="Authentication mode">
+          <button className={mode === "signin" ? "active" : ""} onClick={() => setMode("signin")} type="button">
+            Sign in
+          </button>
+          <button className={mode === "signup" ? "active" : ""} onClick={() => setMode("signup")} type="button">
+            Create
+          </button>
+        </div>
+
+        <form className="form" onSubmit={submit}>
+          <label>
+            Email
+            <input autoComplete="email" inputMode="email" onChange={(event) => setEmail(event.target.value)} type="email" value={email} />
+          </label>
+          <label>
+            Password
+            <input
+              autoComplete={mode === "signin" ? "current-password" : "new-password"}
+              minLength={6}
+              onChange={(event) => setPassword(event.target.value)}
+              type="password"
+              value={password}
+            />
+          </label>
+          <button className="primary-button" disabled={isSaving || !email || password.length < 6} type="submit">
+            <Mail size={18} />
+            <span>{mode === "signin" ? "Sign in" : "Create account"}</span>
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function Onboarding({
+  error,
+  isSaving,
+  notice,
+  onCreateHousehold,
+  onJoinHousehold,
+  onSignOut,
+  userEmail
+}: {
+  error: string | null;
+  isSaving: boolean;
+  notice: string | null;
+  onCreateHousehold: (name: string, displayName: string, roommateNames: string[]) => Promise<void>;
+  onJoinHousehold: (inviteCode: string, displayName: string) => Promise<void>;
+  onSignOut: () => Promise<void>;
+  userEmail: string;
+}) {
   const [mode, setMode] = useState<"create" | "join">("create");
   const [householdName, setHouseholdName] = useState("Apartment");
   const [roommates, setRoommates] = useState("David\nAlex\nSam");
   const [inviteCode, setInviteCode] = useState("");
   const [yourName, setYourName] = useState("David");
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const names =
-      mode === "create"
-        ? roommates
-            .split("\n")
-            .map((name) => name.trim())
-            .filter(Boolean)
-        : [yourName.trim() || "You"];
-    const people = names.map<Person>((name) => ({ id: makeId("person"), name }));
+    const displayName = yourName.trim() || "You";
 
-    onReady({
-      id: makeId("household"),
-      name: mode === "create" ? householdName.trim() || "Household" : "Joined household",
-      inviteCode: mode === "create" ? createInviteCode() : inviteCode.trim().toUpperCase() || createInviteCode(),
-      people,
-      expenses: [],
-      settlements: [],
-      createdAt: new Date().toISOString()
-    });
+    if (mode === "create") {
+      await onCreateHousehold(
+        householdName.trim() || "Household",
+        displayName,
+        roommates
+          .split("\n")
+          .map((name) => name.trim())
+          .filter(Boolean)
+      );
+    } else {
+      await onJoinHousehold(inviteCode.trim().toUpperCase(), displayName);
+    }
   }
 
   return (
@@ -236,6 +458,14 @@ function Onboarding({ onReady }: { onReady: (household: Household) => void }) {
         </div>
         <p className="eyebrow">WiseSplit</p>
         <h1>Shared expenses without spreadsheet archaeology.</h1>
+        <div className="signed-in-row">
+          <span>{userEmail}</span>
+          <button className="ghost-button slim" onClick={onSignOut} type="button">
+            <LogOut size={18} />
+            <span>Sign out</span>
+          </button>
+        </div>
+        <Feedback error={error} notice={notice} />
 
         <div className="segmented" role="tablist" aria-label="Household setup">
           <button className={mode === "create" ? "active" : ""} onClick={() => setMode("create")} type="button">
@@ -252,6 +482,10 @@ function Onboarding({ onReady }: { onReady: (household: Household) => void }) {
               <label>
                 Household name
                 <input value={householdName} onChange={(event) => setHouseholdName(event.target.value)} />
+              </label>
+              <label>
+                Your display name
+                <input value={yourName} onChange={(event) => setYourName(event.target.value)} />
               </label>
               <label>
                 Roommates
@@ -278,12 +512,9 @@ function Onboarding({ onReady }: { onReady: (household: Household) => void }) {
               </label>
             </>
           )}
-          <button className="primary-button" type="submit">
+          <button className="primary-button" disabled={isSaving} type="submit">
             <Plus size={18} />
             <span>{mode === "create" ? "Create household" : "Join household"}</span>
-          </button>
-          <button className="ghost-button" type="button" onClick={() => onReady(createSampleHousehold())}>
-            Load demo
           </button>
         </form>
       </section>
@@ -305,10 +536,12 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
 
 function ExpenseForm({
   household,
+  isSaving,
   onAddExpense
 }: {
   household: Household;
-  onAddExpense: (expense: Expense) => void;
+  isSaving: boolean;
+  onAddExpense: (expense: Expense) => Promise<void>;
 }) {
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState("");
@@ -341,7 +574,7 @@ function ExpenseForm({
     });
   }
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const splits =
       splitMode === "equal"
@@ -351,7 +584,7 @@ function ExpenseForm({
             amount: parseMoneyInput(customAmounts[person.id] ?? "0")
           }));
     const expense: Expense = {
-      id: makeId("expense"),
+      id: "pending",
       title: title.trim() || "Untitled expense",
       amount: parsedAmount,
       paidById,
@@ -361,7 +594,7 @@ function ExpenseForm({
 
     if (!parsedAmount || !paidById || !splits.length || !validateExpenseSplits(expense)) return;
 
-    onAddExpense(expense);
+    await onAddExpense(expense);
     setTitle("");
     setAmount("");
     setCustomAmounts({});
@@ -451,7 +684,7 @@ function ExpenseForm({
         ) : null}
       </div>
 
-      <button className="primary-button" disabled={!canSubmit} type="submit">
+      <button className="primary-button" disabled={isSaving || !canSubmit} type="submit">
         <Plus size={18} />
         <span>Add expense</span>
       </button>
@@ -461,12 +694,14 @@ function ExpenseForm({
 
 function SettlementForm({
   household,
+  isSaving,
   suggestions,
   onAddSettlement
 }: {
   household: Household;
+  isSaving: boolean;
   suggestions: ReturnType<typeof suggestSettlements>;
-  onAddSettlement: (settlement: Settlement) => void;
+  onAddSettlement: (settlement: Settlement) => Promise<void>;
 }) {
   const firstSuggestion = suggestions[0];
   const [fromId, setFromId] = useState(firstSuggestion?.fromId ?? household.people[0]?.id ?? "");
@@ -482,12 +717,12 @@ function SettlementForm({
     }
   }, [firstSuggestion]);
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!fromId || !toId || fromId === toId || parsedAmount <= 0) return;
 
-    onAddSettlement({
-      id: makeId("settlement"),
+    await onAddSettlement({
+      id: "pending",
       fromId,
       toId,
       amount: parsedAmount,
@@ -530,7 +765,7 @@ function SettlementForm({
         </label>
       </div>
 
-      <button className="secondary-button" disabled={!parsedAmount || fromId === toId} type="submit">
+      <button className="secondary-button" disabled={isSaving || !parsedAmount || fromId === toId} type="submit">
         <CircleDollarSign size={18} />
         <span>Record payment</span>
       </button>
@@ -586,13 +821,21 @@ function BalancesPanel({
   );
 }
 
-function PeoplePanel({ people, onAddPerson }: { people: Person[]; onAddPerson: (name: string) => void }) {
+function PeoplePanel({
+  isSaving,
+  people,
+  onAddPerson
+}: {
+  isSaving: boolean;
+  people: Person[];
+  onAddPerson: (name: string) => Promise<void>;
+}) {
   const [name, setName] = useState("");
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!name.trim()) return;
-    onAddPerson(name.trim());
+    await onAddPerson(name.trim());
     setName("");
   }
 
@@ -611,7 +854,7 @@ function PeoplePanel({ people, onAddPerson }: { people: Person[]; onAddPerson: (
       </div>
       <div className="inline-form">
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder="New roommate" />
-        <button className="icon-button" type="submit" title="Add roommate">
+        <button className="icon-button" disabled={isSaving} type="submit" title="Add roommate">
           <Plus size={18} />
         </button>
       </div>

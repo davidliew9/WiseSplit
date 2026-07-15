@@ -134,6 +134,13 @@ button:disabled {
   background: var(--surface-soft);
 }
 
+.ghost-button.slim {
+  width: auto;
+  min-height: 40px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
 .icon-button {
   width: 42px;
   flex: 0 0 42px;
@@ -458,6 +465,39 @@ button:focus-visible {
   color: var(--muted);
 }
 
+.feedback {
+  margin: 0 0 16px;
+  padding: 12px;
+  border-radius: 8px;
+  font-weight: 800;
+}
+
+.feedback.error {
+  color: #881337;
+  background: #ffe4e6;
+  border: 1px solid #fecdd3;
+}
+
+.feedback.notice {
+  color: var(--teal-dark);
+  background: #ccfbf1;
+  border: 1px solid #99f6e4;
+}
+
+.signed-in-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
 .onboarding {
   min-height: 100vh;
   display: grid;
@@ -508,6 +548,19 @@ button:focus-visible {
   .topbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .topbar-actions,
+  .signed-in-row {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .topbar-actions .ghost-button.slim,
+  .topbar-actions .invite-button,
+  .signed-in-row .ghost-button.slim {
+    width: 100%;
   }
 
   .field-grid,
