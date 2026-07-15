@@ -104,7 +104,13 @@ function mapHousehold(
 export async function getCurrentUser() {
   const client = getSupabase();
   const { data, error } = await client.auth.getUser();
-  if (error) throw error;
+  if (error) {
+    if (error.name === "AuthSessionMissingError" || error.message.toLowerCase().includes("session missing")) {
+      return null;
+    }
+
+    throw error;
+  }
   return data.user;
 }
 
