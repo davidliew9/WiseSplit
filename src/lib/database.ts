@@ -121,7 +121,12 @@ export function onAuthStateChange(callback: (user: User | null) => void) {
 
 export async function signUpWithPassword(email: string, password: string) {
   const client = getSupabase();
-  const { data, error } = await client.auth.signUp({ email, password });
+  const redirectTo = typeof window === "undefined" ? undefined : window.location.origin;
+  const { data, error } = await client.auth.signUp({
+    email,
+    password,
+    options: redirectTo ? { emailRedirectTo: redirectTo } : undefined
+  });
   if (error) throw error;
   return data;
 }
