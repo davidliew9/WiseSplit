@@ -63,7 +63,8 @@ function mapHousehold(
     .sort((left, right) => left.created_at.localeCompare(right.created_at))
     .map((member) => ({
       id: member.id,
-      name: member.display_name
+      name: member.display_name,
+      userId: member.user_id
     }));
 
   return {
