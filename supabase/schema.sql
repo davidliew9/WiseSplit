@@ -158,6 +158,30 @@ as $$
   );
 $$;
 
+create or replace function public.rename_household(
+  target_household_id uuid,
+  household_name text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null or not public.is_household_member(target_household_id) then
+    raise exception 'Only group members can rename this group';
+  end if;
+
+  if nullif(trim(household_name), '') is null then
+    raise exception 'Group name cannot be empty';
+  end if;
+
+  update households
+  set name = trim(household_name)
+  where id = target_household_id;
+end;
+$$;
+
 create or replace function public.create_household(
   household_name text,
   member_display_name text
@@ -335,5 +359,6 @@ grant select, insert on table expense_splits to authenticated;
 grant select, insert on table settlements to authenticated;
 
 grant execute on function public.is_household_member(uuid) to authenticated;
+grant execute on function public.rename_household(uuid, text) to authenticated;
 grant execute on function public.create_household(text, text) to authenticated;
 grant execute on function public.join_household_by_invite(text, text) to authenticated;

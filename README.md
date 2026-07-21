@@ -4,7 +4,8 @@ A small Splitwise-style PWA for roommate households. The app uses Supabase Auth 
 
 ## What Works
 
-- Create or join a household
+- Create, rename, join, and switch between multiple groups
+- Share an invite link or code with existing and new users
 - Add roommates
 - Add an expense with a payer and participants
 - Split expenses equally or by custom owed amounts
@@ -55,6 +56,7 @@ In Supabase, open SQL Editor and run `supabase/schema.sql`. It creates:
 - `settlements`
 - row level security policies
 - helper functions for household creation and invite-code joining
+- a protected helper function for group renaming
 - validation triggers that keep expenses and settlements inside one household
 
 If you already ran an older development schema and do not need to keep that test data, run `supabase/reset-dev.sql` first, then run `supabase/schema.sql`.
@@ -62,9 +64,9 @@ If you already ran an older development schema and do not need to keep that test
 ## App Flow
 
 1. Create an account or sign in.
-2. Create a household and add roommate names.
-3. Share the invite code shown in the top bar.
-4. Roommates sign in and join with that code.
+2. Create a group and add roommate names.
+3. Share the invite link from the group screen.
+4. Roommates open the link, sign in or create an account, and join with the prefilled code.
 5. Add expenses, view balances, and record settlements.
 
 Roommate names can exist before someone joins. If Alex is already listed as a placeholder and signs up using the display name `Alex`, joining with the invite code claims that member row for Alex's account.

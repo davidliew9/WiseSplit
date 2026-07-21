@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   CalendarDays,
   Check,
+  ChevronRight,
   CircleDollarSign,
   Copy,
   HandCoins,
@@ -18,10 +19,12 @@ import {
   ReceiptText,
   RefreshCw,
   Scale,
+  Share2,
   Settings,
   User as UserIcon,
   UserPlus,
-  Users
+  Users,
+  X
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { recentActivity, getPersonName } from "@/lib/activity";
@@ -38,9 +41,10 @@ import {
   insertExpense,
   insertSettlement,
   joinHousehold,
-  loadFirstHousehold,
   loadHousehold,
+  loadHouseholds,
   onAuthStateChange,
+  renameHousehold,
   signInWithPassword,
   signOut,
   signUpWithPassword
@@ -50,6 +54,7 @@ import type { User } from "@supabase/supabase-js";
 import type { Expense, ExpenseSplit, Household, Person, Settlement } from "@/lib/types";
 
 type AppTab = "friends" | "groups" | "activity" | "account";
+type ActiveModal = "expense" | "settlement" | "expense-details" | "manage-group" | "rename-group" | "share-group" | null;
 
 function splitEvenly(amount: number, personIds: string[]): ExpenseSplit[] {
   const totalCents = toCents(amount);
@@ -70,6 +75,7 @@ function personLabel(household: Household, personId: string) {
 export default function HomePage() {
   const [user, setUser] = useState<User | null>(null);
   const [household, setHousehold] = useState<Household | null>(null);
+  const [households, setHouseholds] = useState<Household[]>([]);
   const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [booting, setBooting] = useState(true);
@@ -78,7 +84,11 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<AppTab>("groups");
   const [groupView, setGroupView] = useState<"list" | "detail">("list");
-  const [showExpenseForm, setShowExpenseForm] = useState(false);
+  const [activeModal, setActiveModal] = useState<ActiveModal>(null);
+  const [pendingInvite, setPendingInvite] = useState(() =>
+    typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("invite")?.trim().toUpperCase() ?? ""
+  );
+  const [invitePromptShown, setInvitePromptShown] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -88,7 +98,9 @@ export default function HomePage() {
         const currentUser = await getCurrentUser();
         if (!active) return;
         setUser(currentUser);
-        setHousehold(currentUser ? await loadFirstHousehold() : null);
+        const nextHouseholds = currentUser ? await loadHouseholds() : [];
+        setHouseholds(nextHouseholds);
+        setHousehold(nextHouseholds[0] ?? null);
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Could not connect to Supabase.");
       } finally {
@@ -104,7 +116,9 @@ export default function HomePage() {
     const listener = onAuthStateChange(async (nextUser) => {
       if (!active) return;
       setUser(nextUser);
-      setHousehold(nextUser ? await loadFirstHousehold() : null);
+      const nextHouseholds = nextUser ? await loadHouseholds() : [];
+      setHouseholds(nextHouseholds);
+      setHousehold(nextHouseholds[0] ?? null);
       setBooting(false);
     });
 
@@ -114,18 +128,31 @@ export default function HomePage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (user && household && pendingInvite && !invitePromptShown) {
+      setActiveModal("manage-group");
+      setInvitePromptShown(true);
+    }
+  }, [household, invitePromptShown, pendingInvite, user]);
+
   const selectedExpense = useMemo(
     () => household?.expenses.find((expense) => expense.id === selectedExpenseId) ?? null,
     [household, selectedExpenseId]
   );
 
   async function refreshHousehold(targetHouseholdId = household?.id) {
-    if (!targetHouseholdId) {
-      setHousehold(await loadFirstHousehold());
-      return;
-    }
+    if (!targetHouseholdId) return;
+    const refreshed = await loadHousehold(targetHouseholdId);
+    setHousehold(refreshed);
+    setHouseholds((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
+  }
 
-    setHousehold(await loadHousehold(targetHouseholdId));
+  async function refreshHouseholds(preferredHouseholdId = household?.id) {
+    const nextHouseholds = await loadHouseholds();
+    setHouseholds(nextHouseholds);
+    setHousehold(
+      nextHouseholds.find((item) => item.id === preferredHouseholdId) ?? nextHouseholds[0] ?? null
+    );
   }
 
   async function runAction(action: () => Promise<void>) {
@@ -159,14 +186,23 @@ export default function HomePage() {
   async function handleCreateHousehold(name: string, displayName: string, roommateNames: string[]) {
     await runAction(async () => {
       const nextHousehold = await createHousehold(name, displayName, roommateNames);
-      setHousehold(nextHousehold);
+      await refreshHouseholds(nextHousehold.id);
+      setGroupView("detail");
+      setActiveModal(null);
+      setPendingInvite("");
+      setNotice(`${nextHousehold.name} created.`);
     });
   }
 
   async function handleJoinHousehold(inviteCode: string, displayName: string) {
     await runAction(async () => {
       const nextHousehold = await joinHousehold(inviteCode, displayName);
-      setHousehold(nextHousehold);
+      await refreshHouseholds(nextHousehold.id);
+      setGroupView("detail");
+      setActiveModal(null);
+      setPendingInvite("");
+      setNotice(`Joined ${nextHousehold.name}.`);
+      if (typeof window !== "undefined") window.history.replaceState({}, "", window.location.pathname);
     });
   }
 
@@ -174,6 +210,7 @@ export default function HomePage() {
     await runAction(async () => {
       await signOut();
       setHousehold(null);
+      setHouseholds([]);
       setUser(null);
     });
   }
@@ -195,6 +232,7 @@ export default function HomePage() {
         onCreateHousehold={handleCreateHousehold}
         onJoinHousehold={handleJoinHousehold}
         onSignOut={handleSignOut}
+        initialInviteCode={pendingInvite}
         userEmail={user.email ?? "Signed in"}
       />
     );
@@ -215,7 +253,7 @@ export default function HomePage() {
       const expenseId = await insertExpense(activeHousehold.id, expense);
       await refreshHousehold(activeHousehold.id);
       setSelectedExpenseId(expenseId);
-      setShowExpenseForm(false);
+      setActiveModal("expense-details");
       setGroupView("detail");
     });
   }
@@ -224,6 +262,8 @@ export default function HomePage() {
     await runAction(async () => {
       await insertSettlement(activeHousehold.id, settlement);
       await refreshHousehold(activeHousehold.id);
+      setActiveModal(null);
+      setNotice("Settlement recorded.");
     });
   }
 
@@ -234,10 +274,48 @@ export default function HomePage() {
     });
   }
 
+  function getInviteUrl() {
+    return `${window.location.origin}${window.location.pathname}?invite=${encodeURIComponent(activeHousehold.inviteCode)}`;
+  }
+
   async function copyInvite() {
-    await navigator.clipboard?.writeText(activeHousehold.inviteCode);
+    await navigator.clipboard?.writeText(getInviteUrl());
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  async function shareInvite() {
+    const url = getInviteUrl();
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `Join ${activeHousehold.name} on WiseSplit`,
+          text: `Join my ${activeHousehold.name} group on WiseSplit.`,
+          url
+        });
+        return;
+      } catch (caught) {
+        if (caught instanceof DOMException && caught.name === "AbortError") return;
+      }
+    }
+    await copyInvite();
+  }
+
+  async function updateGroupName(name: string) {
+    await runAction(async () => {
+      await renameHousehold(activeHousehold.id, name);
+      await refreshHousehold(activeHousehold.id);
+      setActiveModal(null);
+      setNotice("Group name updated.");
+    });
+  }
+
+  function openGroup(groupId: string) {
+    const nextHousehold = households.find((item) => item.id === groupId);
+    if (!nextHousehold) return;
+    setHousehold(nextHousehold);
+    setSelectedExpenseId(null);
+    setGroupView("detail");
   }
 
   return (
@@ -246,33 +324,28 @@ export default function HomePage() {
 
       {activeTab === "groups" && groupView === "list" ? (
         <GroupsHome
-          balances={balances}
-          household={activeHousehold}
-          onOpenGroup={() => setGroupView("detail")}
-          onRefresh={() => runAction(() => refreshHousehold(activeHousehold.id))}
-          totalSpent={totalSpent}
-          youAreOwed={youAreOwed}
-          youOwe={youOwe}
+          households={households}
+          onCreateGroup={() => setActiveModal("manage-group")}
+          onOpenGroup={openGroup}
+          onRefresh={() => runAction(() => refreshHouseholds(activeHousehold.id))}
+          userId={user.id}
         />
       ) : null}
 
       {activeTab === "groups" && groupView === "detail" ? (
         <GroupDetail
           balances={balances}
-          copied={copied}
           household={activeHousehold}
-          isSaving={isSaving}
-          onAddExpense={addExpense}
-          onAddSettlement={addSettlement}
           onBack={() => {
             setGroupView("list");
-            setShowExpenseForm(false);
           }}
-          onCopyInvite={copyInvite}
-          onSelectExpense={setSelectedExpenseId}
-          onToggleExpenseForm={() => setShowExpenseForm((current) => !current)}
-          selectedExpense={selectedExpense ?? activeHousehold.expenses[0] ?? null}
-          showExpenseForm={showExpenseForm}
+          onEditGroup={() => setActiveModal("rename-group")}
+          onOpenSettlement={() => setActiveModal("settlement")}
+          onShareGroup={() => setActiveModal("share-group")}
+          onSelectExpense={(expenseId) => {
+            setSelectedExpenseId(expenseId);
+            setActiveModal("expense-details");
+          }}
           suggestions={suggestions}
           totalSpent={totalSpent}
           youAreOwed={youAreOwed}
@@ -296,26 +369,76 @@ export default function HomePage() {
         <AccountScreen
           household={activeHousehold}
           onRefresh={() => runAction(() => refreshHousehold(activeHousehold.id))}
+          onShareGroup={() => setActiveModal("share-group")}
           onSignOut={handleSignOut}
           userEmail={user.email ?? "Signed in"}
         />
       ) : null}
 
-      <button
-        className="floating-add"
-        onClick={() => {
-          setActiveTab("groups");
-          setGroupView("detail");
-          setShowExpenseForm(true);
-        }}
-        type="button"
-      >
-        <ReceiptText size={24} />
-        <span>Add expense</span>
-      </button>
+      {activeTab === "groups" && groupView === "detail" ? (
+        <div className="floating-actions">
+          <button className="floating-action settlement" onClick={() => setActiveModal("settlement")} type="button">
+            <HandCoins size={22} />
+            <span>Settle up</span>
+          </button>
+          <button className="floating-action expense" onClick={() => setActiveModal("expense")} type="button">
+            <ReceiptText size={22} />
+            <span>Add expense</span>
+          </button>
+        </div>
+      ) : null}
+
+      {activeModal === "expense" ? (
+        <ModalShell title="Add expense" onClose={() => setActiveModal(null)}>
+          <ExpenseForm household={activeHousehold} isSaving={isSaving} onAddExpense={addExpense} />
+        </ModalShell>
+      ) : null}
+
+      {activeModal === "settlement" ? (
+        <ModalShell title="Settle up" onClose={() => setActiveModal(null)}>
+          <SettlementForm household={activeHousehold} isSaving={isSaving} suggestions={suggestions} onAddSettlement={addSettlement} />
+        </ModalShell>
+      ) : null}
+
+      {activeModal === "expense-details" ? (
+        <ModalShell title="Expense details" onClose={() => setActiveModal(null)}>
+          <ExpenseDetails household={activeHousehold} expense={selectedExpense} />
+        </ModalShell>
+      ) : null}
+
+      {activeModal === "manage-group" ? (
+        <ModalShell title={pendingInvite ? "Join a group" : "New group"} onClose={() => setActiveModal(null)}>
+          <GroupManagerForm
+            defaultName={currentPerson?.name ?? user.email?.split("@")[0] ?? ""}
+            initialInviteCode={pendingInvite}
+            isSaving={isSaving}
+            onCreate={handleCreateHousehold}
+            onJoin={handleJoinHousehold}
+          />
+        </ModalShell>
+      ) : null}
+
+      {activeModal === "rename-group" ? (
+        <ModalShell title="Edit group" onClose={() => setActiveModal(null)}>
+          <RenameGroupForm household={activeHousehold} isSaving={isSaving} onSave={updateGroupName} />
+        </ModalShell>
+      ) : null}
+
+      {activeModal === "share-group" ? (
+        <ModalShell title="Invite people" onClose={() => setActiveModal(null)}>
+          <ShareGroupPanel
+            copied={copied}
+            household={activeHousehold}
+            inviteUrl={getInviteUrl()}
+            onCopy={copyInvite}
+            onShare={shareInvite}
+          />
+        </ModalShell>
+      ) : null}
 
       <BottomNav activeTab={activeTab} onChange={(tab) => {
         setActiveTab(tab);
+        setActiveModal(null);
         if (tab === "groups") setGroupView("list");
       }} />
     </main>
@@ -323,25 +446,30 @@ export default function HomePage() {
 }
 
 function GroupsHome({
-  balances,
-  household,
+  households,
+  onCreateGroup,
   onOpenGroup,
   onRefresh,
-  totalSpent,
-  youAreOwed,
-  youOwe
+  userId
 }: {
-  balances: Record<string, number>;
-  household: Household;
-  onOpenGroup: () => void;
+  households: Household[];
+  onCreateGroup: () => void;
+  onOpenGroup: (groupId: string) => void;
   onRefresh: () => void;
-  totalSpent: number;
-  youAreOwed: number;
-  youOwe: number;
+  userId: string;
 }) {
-  const friendLines = household.people
-    .filter((person) => Math.abs(balances[person.id] ?? 0) > 0.005)
-    .slice(0, 2);
+  const summaries = households.map((household) => {
+    const balances = calculateBalances(household);
+    const currentPerson = household.people.find((person) => person.userId === userId);
+    const currentBalance = currentPerson ? balances[currentPerson.id] ?? 0 : 0;
+    return { balances, currentBalance, household };
+  });
+  const youOwe = summaries.reduce((sum, item) => sum + Math.abs(Math.min(item.currentBalance, 0)), 0);
+  const youAreOwed = summaries.reduce((sum, item) => sum + Math.max(item.currentBalance, 0), 0);
+  const totalSpent = households.reduce(
+    (sum, item) => sum + item.expenses.reduce((groupSum, expense) => groupSum + expense.amount, 0),
+    0
+  );
 
   return (
     <section className="screen-view">
@@ -349,7 +477,8 @@ function GroupsHome({
         <button className="round-icon-button" type="button" title="Search">
           <SearchIcon />
         </button>
-        <button className="text-action" type="button" onClick={onOpenGroup}>
+        <button className="text-action" type="button" onClick={onCreateGroup}>
+          <Plus size={19} />
           Create group
         </button>
       </header>
@@ -365,31 +494,42 @@ function GroupsHome({
         </button>
       </div>
 
-      <button className="group-card-row" onClick={onOpenGroup} type="button">
-        <GroupAvatar name={household.name} />
-        <span className="group-card-main">
-          <strong>{household.name}</strong>
-          {friendLines.length ? (
-            friendLines.map((person) => {
-              const amount = balances[person.id] ?? 0;
-              return (
-                <small key={person.id}>
-                  {amount > 0 ? `${person.name} is owed ` : `${person.name} owes `}
-                  <span className={amount > 0 ? "positive" : "negative"}>
-                    {formatCurrency(Math.abs(amount))}
-                  </span>
-                </small>
-              );
-            })
-          ) : (
-            <small>Settled up with {household.people.length} people</small>
-          )}
-        </span>
-        <span className={youAreOwed > youOwe ? "group-card-balance positive" : youOwe > 0 ? "group-card-balance negative" : "group-card-balance"}>
-          <small>{youAreOwed > youOwe ? "you are owed" : youOwe > 0 ? "you owe" : "settled"}</small>
-          <strong>{youAreOwed > youOwe ? formatCurrency(youAreOwed) : youOwe > 0 ? formatCurrency(youOwe) : ""}</strong>
-        </span>
-      </button>
+      <div className="group-list">
+        {summaries.map(({ balances, currentBalance, household }) => {
+          const friendLines = household.people
+            .filter((person) => Math.abs(balances[person.id] ?? 0) > 0.005)
+            .slice(0, 2);
+
+          return (
+            <button className="group-card-row" key={household.id} onClick={() => onOpenGroup(household.id)} type="button">
+              <GroupAvatar name={household.name} />
+              <span className="group-card-main">
+                <strong>{household.name}</strong>
+                {friendLines.length ? (
+                  friendLines.map((person) => {
+                    const amount = balances[person.id] ?? 0;
+                    return (
+                      <small key={person.id}>
+                        {amount > 0 ? `${person.name} is owed ` : `${person.name} owes `}
+                        <span className={amount > 0 ? "positive" : "negative"}>
+                          {formatCurrency(Math.abs(amount))}
+                        </span>
+                      </small>
+                    );
+                  })
+                ) : (
+                  <small>Settled up with {household.people.length} people</small>
+                )}
+              </span>
+              <span className={currentBalance > 0 ? "group-card-balance positive" : currentBalance < 0 ? "group-card-balance negative" : "group-card-balance"}>
+                <small>{currentBalance > 0 ? "you are owed" : currentBalance < 0 ? "you owe" : "settled"}</small>
+                <strong>{Math.abs(currentBalance) > 0.005 ? formatCurrency(Math.abs(currentBalance)) : ""}</strong>
+              </span>
+              <ChevronRight className="group-chevron" size={22} />
+            </button>
+          );
+        })}
+      </div>
 
       <div className="promo-panel">
         <p className="eyebrow">Shared tab</p>
@@ -403,34 +543,24 @@ function GroupsHome({
 
 function GroupDetail({
   balances,
-  copied,
   household,
-  isSaving,
-  onAddExpense,
-  onAddSettlement,
   onBack,
-  onCopyInvite,
+  onEditGroup,
+  onOpenSettlement,
+  onShareGroup,
   onSelectExpense,
-  onToggleExpenseForm,
-  selectedExpense,
-  showExpenseForm,
   suggestions,
   totalSpent,
   youAreOwed,
   youOwe
 }: {
   balances: Record<string, number>;
-  copied: boolean;
   household: Household;
-  isSaving: boolean;
-  onAddExpense: (expense: Expense) => Promise<void>;
-  onAddSettlement: (settlement: Settlement) => Promise<void>;
   onBack: () => void;
-  onCopyInvite: () => void;
+  onEditGroup: () => void;
+  onOpenSettlement: () => void;
+  onShareGroup: () => void;
   onSelectExpense: (expenseId: string) => void;
-  onToggleExpenseForm: () => void;
-  selectedExpense: Expense | null;
-  showExpenseForm: boolean;
   suggestions: ReturnType<typeof suggestSettlements>;
   totalSpent: number;
   youAreOwed: number;
@@ -443,8 +573,8 @@ function GroupDetail({
           <button className="hero-icon-button" onClick={onBack} type="button" title="Back to groups">
             <ArrowLeft size={26} />
           </button>
-          <button className="hero-icon-button" onClick={onCopyInvite} type="button" title="Copy invite code">
-            {copied ? <Check size={25} /> : <Settings size={25} />}
+          <button className="hero-icon-button" onClick={onEditGroup} type="button" title="Edit group name">
+            <Pencil size={24} />
           </button>
         </div>
         <div className="hero-pattern">
@@ -452,17 +582,17 @@ function GroupDetail({
         </div>
         <h1>{household.name}</h1>
         <div className="hero-pills">
-          <button className="hero-pill" type="button">
+          <button className="hero-pill" type="button" onClick={onOpenSettlement}>
             <CalendarDays size={19} />
             <span>Settle up</span>
           </button>
-          <button className="hero-pill" type="button" onClick={onCopyInvite}>
+          <button className="hero-pill" type="button" onClick={onShareGroup}>
             <Users size={19} />
             <span>{household.people.length} people</span>
           </button>
-          <button className="hero-pill wide" type="button">
-            <Pencil size={19} />
-            <span>{household.inviteCode}</span>
+          <button className="hero-pill wide" type="button" onClick={onShareGroup}>
+            <Share2 size={19} />
+            <span>Invite people</span>
           </button>
         </div>
       </header>
@@ -491,18 +621,9 @@ function GroupDetail({
             ))}
           </div>
           <div className="quick-actions">
-            <button className="settle-button" type="button" onClick={onToggleExpenseForm}>
-              {showExpenseForm ? "Hide form" : "Add expense"}
-            </button>
             <span className="outline-pill">Tracked {formatCurrency(totalSpent)}</span>
           </div>
         </section>
-
-        {showExpenseForm ? (
-          <div className="form-drawer">
-            <ExpenseForm household={household} isSaving={isSaving} onAddExpense={onAddExpense} />
-          </div>
-        ) : null}
 
         <div className="group-columns">
           <div className="feed-list">
@@ -522,8 +643,6 @@ function GroupDetail({
 
           <div className="desktop-side-panel">
             <BalancesPanel household={household} balances={balances} suggestions={suggestions} />
-            <SettlementForm household={household} isSaving={isSaving} suggestions={suggestions} onAddSettlement={onAddSettlement} />
-            <ExpenseDetails household={household} expense={selectedExpense} />
           </div>
         </div>
       </div>
@@ -639,11 +758,13 @@ function ActivityScreen({ activity }: { activity: ReturnType<typeof recentActivi
 function AccountScreen({
   household,
   onRefresh,
+  onShareGroup,
   onSignOut,
   userEmail
 }: {
   household: Household;
   onRefresh: () => void;
+  onShareGroup: () => void;
   onSignOut: () => void;
   userEmail: string;
 }) {
@@ -657,7 +778,7 @@ function AccountScreen({
         <UserIcon size={32} />
       </header>
       <div className="account-actions">
-        <button className="invite-button" type="button">
+        <button className="invite-button" onClick={onShareGroup} type="button">
           <Copy size={18} />
           <span>{household.inviteCode}</span>
         </button>
@@ -707,6 +828,211 @@ function GroupAvatar({ name }: { name: string }) {
     <span className="group-avatar" aria-hidden="true">
       {name.slice(0, 1).toUpperCase()}
     </span>
+  );
+}
+
+function ModalShell({ children, onClose, title }: { children: React.ReactNode; onClose: () => void; title: string }) {
+  useEffect(() => {
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+
+    document.addEventListener("keydown", closeOnEscape);
+    document.body.classList.add("modal-open");
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      document.body.classList.remove("modal-open");
+    };
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose} role="presentation">
+      <section
+        aria-label={title}
+        aria-modal="true"
+        className="modal-sheet"
+        onMouseDown={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <header className="modal-header">
+          <div>
+            <p className="eyebrow">{title === "Expense details" ? "Transaction" : "WiseSplit"}</p>
+            <h2>{title}</h2>
+          </div>
+          <button aria-label="Close" className="modal-close" onClick={onClose} type="button">
+            <X size={24} />
+          </button>
+        </header>
+        <div className="modal-content">{children}</div>
+      </section>
+    </div>
+  );
+}
+
+function GroupManagerForm({
+  defaultName,
+  initialInviteCode,
+  isSaving,
+  onCreate,
+  onJoin
+}: {
+  defaultName: string;
+  initialInviteCode: string;
+  isSaving: boolean;
+  onCreate: (name: string, displayName: string, roommateNames: string[]) => Promise<void>;
+  onJoin: (inviteCode: string, displayName: string) => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"create" | "join">(initialInviteCode ? "join" : "create");
+  const [groupName, setGroupName] = useState("");
+  const [displayName, setDisplayName] = useState(defaultName);
+  const [roommates, setRoommates] = useState("");
+  const [inviteCode, setInviteCode] = useState(initialInviteCode);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const cleanDisplayName = displayName.trim() || "You";
+    if (mode === "create") {
+      await onCreate(
+        groupName.trim(),
+        cleanDisplayName,
+        roommates.split("\n").map((name) => name.trim()).filter(Boolean)
+      );
+      return;
+    }
+    await onJoin(inviteCode.trim().toUpperCase(), cleanDisplayName);
+  }
+
+  return (
+    <form className="form modal-form" onSubmit={submit}>
+      <div className="segmented" role="tablist" aria-label="Group action">
+        <button className={mode === "create" ? "active" : ""} onClick={() => setMode("create")} type="button">
+          Create group
+        </button>
+        <button className={mode === "join" ? "active" : ""} onClick={() => setMode("join")} type="button">
+          Join group
+        </button>
+      </div>
+
+      {mode === "create" ? (
+        <>
+          <label>
+            Group name
+            <input autoFocus onChange={(event) => setGroupName(event.target.value)} placeholder="Summer trip" value={groupName} />
+          </label>
+          <label>
+            Your name in this group
+            <input onChange={(event) => setDisplayName(event.target.value)} value={displayName} />
+          </label>
+          <label>
+            Add people now (optional)
+            <textarea
+              onChange={(event) => setRoommates(event.target.value)}
+              placeholder={"Alex\nSam"}
+              rows={3}
+              value={roommates}
+            />
+          </label>
+        </>
+      ) : (
+        <>
+          <div className="info-callout">Use the invite code from a WiseSplit link. You can join with an existing account or after creating one.</div>
+          <label>
+            Invite code
+            <input
+              autoFocus
+              onChange={(event) => setInviteCode(event.target.value)}
+              placeholder="WISE-4B2A1C"
+              value={inviteCode}
+            />
+          </label>
+          <label>
+            Your name in this group
+            <input onChange={(event) => setDisplayName(event.target.value)} value={displayName} />
+          </label>
+        </>
+      )}
+
+      <button
+        className="primary-button modal-submit"
+        disabled={isSaving || (mode === "create" ? !groupName.trim() : !inviteCode.trim())}
+        type="submit"
+      >
+        {mode === "create" ? <Plus size={19} /> : <UserPlus size={19} />}
+        <span>{isSaving ? "Saving…" : mode === "create" ? "Create group" : "Join group"}</span>
+      </button>
+    </form>
+  );
+}
+
+function RenameGroupForm({
+  household,
+  isSaving,
+  onSave
+}: {
+  household: Household;
+  isSaving: boolean;
+  onSave: (name: string) => Promise<void>;
+}) {
+  const [name, setName] = useState(household.name);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!name.trim() || name.trim() === household.name) return;
+    await onSave(name);
+  }
+
+  return (
+    <form className="form modal-form" onSubmit={submit}>
+      <label>
+        Group name
+        <input autoFocus maxLength={80} onChange={(event) => setName(event.target.value)} value={name} />
+      </label>
+      <button className="primary-button modal-submit" disabled={isSaving || !name.trim() || name.trim() === household.name} type="submit">
+        <Check size={19} />
+        <span>{isSaving ? "Saving…" : "Save group name"}</span>
+      </button>
+    </form>
+  );
+}
+
+function ShareGroupPanel({
+  copied,
+  household,
+  inviteUrl,
+  onCopy,
+  onShare
+}: {
+  copied: boolean;
+  household: Household;
+  inviteUrl: string;
+  onCopy: () => Promise<void>;
+  onShare: () => Promise<void>;
+}) {
+  return (
+    <div className="share-panel">
+      <div className="invite-code-card">
+        <span>Invite code</span>
+        <strong>{household.inviteCode}</strong>
+        <small>Anyone with this invite can join {household.name}.</small>
+      </div>
+      <label>
+        Invite link
+        <input onFocus={(event) => event.currentTarget.select()} readOnly value={inviteUrl} />
+      </label>
+      <div className="share-actions">
+        <button className="ghost-button" onClick={onCopy} type="button">
+          {copied ? <Check size={19} /> : <Copy size={19} />}
+          <span>{copied ? "Link copied" : "Copy link"}</span>
+        </button>
+        <button className="primary-button" onClick={onShare} type="button">
+          <Share2 size={19} />
+          <span>Share invite</span>
+        </button>
+      </div>
+      <p className="share-help">
+        Send this link by text, email, or another app. New users will be asked to create an account before joining; existing users can join immediately.
+      </p>
+    </div>
   );
 }
 
@@ -815,6 +1141,7 @@ function AuthScreen({
 
 function Onboarding({
   error,
+  initialInviteCode,
   isSaving,
   notice,
   onCreateHousehold,
@@ -823,6 +1150,7 @@ function Onboarding({
   userEmail
 }: {
   error: string | null;
+  initialInviteCode: string;
   isSaving: boolean;
   notice: string | null;
   onCreateHousehold: (name: string, displayName: string, roommateNames: string[]) => Promise<void>;
@@ -830,11 +1158,11 @@ function Onboarding({
   onSignOut: () => Promise<void>;
   userEmail: string;
 }) {
-  const [mode, setMode] = useState<"create" | "join">("create");
-  const [householdName, setHouseholdName] = useState("Apartment");
-  const [roommates, setRoommates] = useState("David\nAlex\nSam");
-  const [inviteCode, setInviteCode] = useState("");
-  const [yourName, setYourName] = useState("David");
+  const [mode, setMode] = useState<"create" | "join">(initialInviteCode ? "join" : "create");
+  const [householdName, setHouseholdName] = useState("");
+  const [roommates, setRoommates] = useState("");
+  const [inviteCode, setInviteCode] = useState(initialInviteCode);
+  const [yourName, setYourName] = useState(userEmail.split("@")[0] ?? "");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -884,8 +1212,8 @@ function Onboarding({
           {mode === "create" ? (
             <>
               <label>
-                Household name
-                <input value={householdName} onChange={(event) => setHouseholdName(event.target.value)} />
+                Group name
+                <input placeholder="Summer trip" value={householdName} onChange={(event) => setHouseholdName(event.target.value)} />
               </label>
               <label>
                 Your display name
@@ -897,6 +1225,7 @@ function Onboarding({
                   rows={4}
                   value={roommates}
                   onChange={(event) => setRoommates(event.target.value)}
+                  placeholder={"Alex\nSam"}
                 />
               </label>
             </>

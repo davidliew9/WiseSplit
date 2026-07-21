@@ -122,7 +122,7 @@ export function onAuthStateChange(callback: (user: User | null) => void) {
 
 export async function signUpWithPassword(email: string, password: string) {
   const client = getSupabase();
-  const redirectTo = typeof window === "undefined" ? undefined : window.location.origin;
+  const redirectTo = typeof window === "undefined" ? undefined : window.location.href;
   const { data, error } = await client.auth.signUp({
     email,
     password,
@@ -145,19 +145,28 @@ export async function signOut() {
   if (error) throw error;
 }
 
-export async function loadFirstHousehold(): Promise<Household | null> {
+export async function loadHouseholds(): Promise<Household[]> {
   const client = getSupabase();
   const { data: households, error: householdError } = await client
     .from("households")
     .select("id,name,invite_code,created_at")
-    .order("created_at", { ascending: true })
-    .limit(1);
+    .order("created_at", { ascending: true });
 
   if (householdError) throw householdError;
-  const household = households?.[0] as HouseholdRow | undefined;
-  if (!household) return null;
+  const householdRows = (households ?? []) as HouseholdRow[];
+  return Promise.all(householdRows.map((household) => loadHousehold(household.id)));
+}
 
-  return loadHousehold(household.id);
+export async function renameHousehold(householdId: string, name: string) {
+  const client = getSupabase();
+  const cleanName = name.trim();
+  if (!cleanName) throw new Error("Group name cannot be empty.");
+
+  const { error } = await client.rpc("rename_household", {
+    target_household_id: householdId,
+    household_name: cleanName
+  });
+  if (error) throw error;
 }
 
 export async function loadHousehold(householdId: string): Promise<Household> {
