@@ -7,8 +7,8 @@ export default function manifest(): MetadataRoute.Manifest {
     description: "Split household expenses and record roommate settlements.",
     start_url: "/",
     display: "standalone",
-    background_color: "#f8fafc",
-    theme_color: "#0f766e",
+    background_color: "#F3F5F3",
+    theme_color: "#17211D",
     icons: [
       {
         src: "/icon.svg",

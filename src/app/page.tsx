@@ -72,6 +72,14 @@ function personLabel(household: Household, personId: string) {
   return getPersonName(household, personId);
 }
 
+const AVATAR_VARIANTS = ["", "chip-peach", "chip-neutral"] as const;
+
+function avatarVariant(name: string) {
+  let hash = 0;
+  for (const char of name) hash = (hash * 31 + char.charCodeAt(0)) % 997;
+  return AVATAR_VARIANTS[hash % AVATAR_VARIANTS.length];
+}
+
 export default function HomePage() {
   const [user, setUser] = useState<User | null>(null);
   const [household, setHousehold] = useState<Household | null>(null);
@@ -473,14 +481,19 @@ function GroupsHome({
 
   return (
     <section className="screen-view">
-      <header className="mobile-topbar">
-        <button className="round-icon-button" type="button" title="Search">
-          <SearchIcon />
-        </button>
-        <button className="text-action" type="button" onClick={onCreateGroup}>
-          <Plus size={19} />
-          Create group
-        </button>
+      <header className="section-header">
+        <div>
+          <p className="eyebrow">WiseSplit</p>
+          <h1>Groups</h1>
+        </div>
+        <div className="topbar-buttons">
+          <button className="round-icon-button" type="button" title="Search">
+            <SearchIcon />
+          </button>
+          <button className="round-icon-button accent" type="button" onClick={onCreateGroup} title="Create group">
+            <Plus size={20} />
+          </button>
+        </div>
       </header>
 
       <div className="overall-copy">
@@ -710,7 +723,9 @@ function FriendsScreen({
             const amount = balances[person.id] ?? 0;
             return (
               <div className="friend-row" key={person.id}>
-                <span className="friend-avatar">{person.name.slice(0, 1).toUpperCase()}</span>
+                <span className={`friend-avatar ${avatarVariant(person.name)}`.trim()}>
+                  {person.name.slice(0, 1).toUpperCase()}
+                </span>
                 <span>
                   <strong>{person.name}</strong>
                   <small>{amount > 0 ? "is owed" : amount < 0 ? "owes" : "settled up"}</small>
@@ -825,7 +840,7 @@ function BottomNav({ activeTab, onChange }: { activeTab: AppTab; onChange: (tab:
 
 function GroupAvatar({ name }: { name: string }) {
   return (
-    <span className="group-avatar" aria-hidden="true">
+    <span className={`group-avatar ${avatarVariant(name)}`.trim()} aria-hidden="true">
       {name.slice(0, 1).toUpperCase()}
     </span>
   );
